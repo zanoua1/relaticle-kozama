@@ -1,0 +1,70 @@
+name: Construire l'image Relaticle KOZAMA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"   # chaque nuit : reconstruit seulement si Relaticle a publié une nouvelle version
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  UPSTREAM: ghcr.io/relaticle/relaticle:latest
+  # Réglages temps réel (publics : ils sont visibles dans le JavaScript du navigateur).
+  VITE_REVERB_APP_KEY: nfifhyeyznn4e7opc6a9
+  VITE_REVERB_HOST: crm.kozama-consulting.net
+  VITE_REVERB_PORT: "443"
+  VITE_REVERB_SCHEME: https
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Version de Relaticle à utiliser
+        id: up
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          IMAGE="ghcr.io/${OWNER}/relaticle-kozama"
+          DIGEST=$(docker buildx imagetools inspect "$UPSTREAM" --format '{{json .Manifest}}' | jq -r .digest)
+          SHORT="${DIGEST#sha256:}"; SHORT="${SHORT:0:12}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "short=$SHORT" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "schedule" ] && docker buildx imagetools inspect "$IMAGE:up-$SHORT" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "Déjà à jour (Relaticle $SHORT)."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Construire et publier
+        if: steps.up.outputs.skip != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            RELATICLE_IMAGE=ghcr.io/relaticle/relaticle@${{ steps.up.outputs.digest }}
+            VITE_REVERB_APP_KEY=${{ env.VITE_REVERB_APP_KEY }}
+            VITE_REVERB_HOST=${{ env.VITE_REVERB_HOST }}
+            VITE_REVERB_PORT=${{ env.VITE_REVERB_PORT }}
+            VITE_REVERB_SCHEME=${{ env.VITE_REVERB_SCHEME }}
+          tags: |
+            ${{ steps.up.outputs.image }}:latest
+            ${{ steps.up.outputs.image }}:up-${{ steps.up.outputs.short }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Relaticle CRM (KOZAMA) avec temps réel Reverb
